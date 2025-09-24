@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:webrtc_dev/core/utils.dart';
 import 'package:webrtc_dev/features/call_section/call_screen.dart';
+import 'package:webrtc_dev/features/call_section/group_room/group_call_room.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -78,7 +79,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           context,
           PageRouteBuilder(
             pageBuilder: (context, animation, secondaryAnimation) =>
-                CallScreen(roomId: roomId, isCaller: true),
+                GroupChatRoom(roomId: roomId, userId: "user_${DateTime.now().millisecondsSinceEpoch}"),
+            // CallScreen(roomId: roomId,isCaller: true, ),
             transitionsBuilder: (context, animation, secondaryAnimation, child) {
               const begin = Offset(1.0, 0.0);
               const end = Offset.zero;
@@ -124,7 +126,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           context,
           PageRouteBuilder(
             pageBuilder: (context, animation, secondaryAnimation) =>
-                CallScreen(roomId: roomId, isCaller: false),
+                GroupChatRoom(roomId: roomId, userId: "user_${DateTime.now().millisecondsSinceEpoch}"),
+                // CallScreen(roomId: roomId,isCaller: false, ),
             transitionsBuilder: (context, animation, secondaryAnimation, child) {
               const begin = Offset(1.0, 0.0);
               const end = Offset.zero;
