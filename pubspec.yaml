@@ -38,6 +38,7 @@ dependencies:
   cloud_firestore:
   firebase_core:
   permission_handler:
+  firebase_auth: ^4.0.0
 
 dev_dependencies:
   flutter_test:

@@ -240,6 +240,39 @@ class _GroupChatRoomState extends State<GroupChatRoom> with TickerProviderStateM
       print('Local stream created with ID: ${_localStream!.id}');
       print('Video tracks: ${_localStream!.getVideoTracks().length}');
       print('Audio tracks: ${_localStream!.getAudioTracks().length}');
+      if (_localStream!.getVideoTracks().isEmpty) {
+        print('Warning: No video track in local stream');
+        _showQuickFeedback('No camera detected. Please check permissions.');
+      }
+      setState(() {
+        _localRenderer.srcObject = _localStream;
+      });
+    } catch (e) {
+      print('Error setting up local stream: $e');
+      _showErrorDialog('Camera Error', 'Failed to access camera: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> _setupLocalStream1() async {
+    print('Setting up local stream...');
+    setState(() {
+      connectionStatus = 'Accessing camera...';
+    });
+
+    try {
+      _localStream = await navigator.mediaDevices.getUserMedia({
+        'audio': true,
+        'video': {
+          'facingMode': 'user',
+          'width': {'min': 320, 'ideal': 640, 'max': 1280},
+          'height': {'min': 240, 'ideal': 480, 'max': 720},
+          'frameRate': {'min': 15, 'ideal': 24, 'max': 30},
+        },
+      });
+      print('Local stream created with ID: ${_localStream!.id}');
+      print('Video tracks: ${_localStream!.getVideoTracks().length}');
+      print('Audio tracks: ${_localStream!.getAudioTracks().length}');
       setState(() {
         _localRenderer.srcObject = _localStream;
       });
@@ -250,6 +283,113 @@ class _GroupChatRoomState extends State<GroupChatRoom> with TickerProviderStateM
   }
 
   Future<void> _createPeerConnection(String remoteUserId) async {
+    if (_peerConnections.containsKey(remoteUserId)) {
+      print('Peer connection for $remoteUserId already exists');
+      return;
+    }
+
+    final config = {
+      'iceServers': [
+        {'urls': 'stun:stun.l.google.com:19302'},
+        {'urls': 'stun:stun1.l.google.com:19302'},
+        {
+          'urls': 'turn:openrelay.metered.ca:80',
+          'username': 'openrelayproject',
+          'credential': 'openrelayproject',
+        },
+      ],
+      'iceCandidatePoolSize': 10,
+      'bundlePolicy': 'max-bundle',
+      'rtcpMuxPolicy': 'require',
+      'iceTransportPolicy': 'all',
+    };
+
+    print('Creating peer connection for $remoteUserId');
+    final pc = await createPeerConnection(config);
+    _peerConnections[remoteUserId] = pc;
+
+    final renderer = RTCVideoRenderer();
+    await renderer.initialize();
+    _remoteRenderers[remoteUserId] = renderer;
+
+    if (_localStream != null) {
+      for (var track in _localStream!.getTracks()) {
+        await pc.addTrack(track, _localStream!);
+        print('Added track ${track.kind} to peer connection for $remoteUserId');
+      }
+    } else {
+      print('Warning: Local stream is null when adding tracks for $remoteUserId');
+    }
+
+    pc.onIceConnectionState = (state) {
+      print('ICE Connection State for $remoteUserId: $state');
+      setState(() {
+        if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+            state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+          connectionStatus = 'Connected';
+          isConnecting = false;
+          if (_callStartTime == null) _startCallTimer();
+        } else if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+          connectionStatus = 'Reconnecting...';
+        } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          connectionStatus = 'Connection failed';
+          print('Restarting ICE for $remoteUserId');
+          pc.restartIce();
+        }
+      });
+    };
+
+    pc.onTrack = (event) {
+      print('OnTrack for $remoteUserId: Stream count: ${event.streams.length}, Track count: ${event.streams.isNotEmpty ? event.streams[0].getTracks().length : 0}');
+      if (event.streams.isNotEmpty) {
+        final stream = event.streams[0];
+        print('Remote stream ID: ${stream.id}, Video tracks: ${stream.getVideoTracks().length}, Audio tracks: ${stream.getAudioTracks().length}');
+        setState(() {
+          _remoteRenderers[remoteUserId]!.srcObject = null; // Reset renderer
+          _remoteRenderers[remoteUserId]!.srcObject = stream; // Set new stream
+        });
+      } else {
+        print('No streams received in onTrack for $remoteUserId');
+      }
+    };
+
+    pc.onIceCandidate = (candidate) {
+      if (candidate.candidate == null) return;
+      print('Sending ICE candidate for $remoteUserId: ${candidate.candidate}');
+      final roomRef = FirebaseFirestore.instance.collection('rooms').doc('group').collection(widget.roomId).doc(widget.roomId);
+      roomRef
+          .collection('signals')
+          .doc(widget.userId)
+          .collection('to_$remoteUserId')
+          .add({
+        'candidate': candidate.candidate,
+        'sdpMid': candidate.sdpMid,
+        'sdpMLineIndex': candidate.sdpMLineIndex,
+      }).then((_) => print('ICE candidate sent for $remoteUserId')).catchError((e) {
+        print('Error sending ICE candidate for $remoteUserId: $e');
+      });
+    };
+
+    try {
+      final offer = await pc.createOffer({
+        'offerToReceiveAudio': true,
+        'offerToReceiveVideo': true,
+      });
+      await pc.setLocalDescription(offer);
+      print('Local description set for $remoteUserId: ${offer.sdp}');
+      final roomRef = FirebaseFirestore.instance.collection('rooms').doc('group').collection(widget.roomId).doc(widget.roomId);
+      await roomRef.collection('signals').doc(widget.userId).set({
+        'to_$remoteUserId': offer.toMap(),
+      }, SetOptions(merge: true));
+      print('Offer sent to $remoteUserId');
+    } catch (e) {
+      print('Error creating/sending offer for $remoteUserId: $e');
+      _showErrorDialog('Signaling Error', 'Failed to send offer: $e');
+    }
+  }
+
+
+  Future<void> _createPeerConnection1(String remoteUserId) async {
     if (_peerConnections.containsKey(remoteUserId)) {
       print('Peer connection for $remoteUserId already exists');
       return;
@@ -319,6 +459,19 @@ class _GroupChatRoomState extends State<GroupChatRoom> with TickerProviderStateM
         print('No streams received in onTrack for $remoteUserId');
       }
     };
+
+    // pc.onTrack = (event) {
+    //   print('OnTrack for $remoteUserId: Stream count: ${event.streams.length}, Track count: ${event.streams.isNotEmpty ? event.streams[0].getTracks().length : 0}');
+    //   if (event.streams.isNotEmpty) {
+    //     final stream = event.streams[0];
+    //     print('Remote stream ID: ${stream.id}, Video tracks: ${stream.getVideoTracks().length}, Audio tracks: ${stream.getAudioTracks().length}');
+    //     setState(() {
+    //       _remoteRenderers[remoteUserId]!.srcObject = stream;
+    //     });
+    //   } else {
+    //     print('No streams received in onTrack for $remoteUserId');
+    //   }
+    // };
 
     pc.onIceCandidate = (candidate) {
       if (candidate.candidate == null) return;
@@ -710,6 +863,44 @@ class _GroupChatRoomState extends State<GroupChatRoom> with TickerProviderStateM
   }
 
   Widget _buildRemoteVideoView(String userId, RTCVideoRenderer renderer) {
+    return Container(
+      width: MediaQuery.of(context).size.width / 2 - 16,
+      height: 200,
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(11),
+        child: renderer.srcObject != null && renderer.srcObject!.getVideoTracks().isNotEmpty
+            ? RTCVideoView(
+          renderer,
+          key: ValueKey('remote_$userId'),
+          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+          filterQuality: FilterQuality.medium,
+        )
+            : Container(
+          color: Colors.black,
+          child: Center(
+            child: Text(
+              'User $userId\n(No video stream)', textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white54, fontSize: 14,),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRemoteVideoView1(String userId, RTCVideoRenderer renderer) {
     return Container(
       width: MediaQuery.of(context).size.width / 2 - 16,
       height: 200,
